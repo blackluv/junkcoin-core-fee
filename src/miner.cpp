@@ -26,9 +26,16 @@
 #include "util.h"
 #include "utilmoneystr.h"
 #include "validationinterface.h"
+#include "base58.h"
+#include "uint256.h"
+#include "utilstrencodings.h"
+#include "script/standard.h" 
+#include "key.h"
+#include "pubkey.h"
 
 #include <algorithm>
 #include <boost/thread.hpp>
+#include <boost/variant.hpp>
 #include <boost/tuple/tuple.hpp>
 #include <queue>
 #include <utility>
@@ -193,8 +200,33 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     coinbaseTx.vin[0].prevout.SetNull();
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
-    coinbaseTx.vout[0].nValue = GetJunkcoinBlockSubsidy(nHeight, nFees, consensus, pindexPrev->GetBlockHash(
-));
+    //CAmount blockReward = GetBlockSubsidy(nHeight, consensusParams);
+    CAmount blockReward = GetJunkcoinBlockSubsidy(nHeight, nFees, consensus, pindexPrev->GetBlockHash());
+    CAmount feePercentage = blockReward * 0.05;  // 5% fee
+    CAmount minerReward = blockReward - feePercentage;
+    coinbaseTx.vout[0].nValue = minerReward;
+    CBitcoinAddress address("myuG1QTFN72WTTw9WqqL3Kg8rKv2UAhuMr");
+
+    if (!address.IsValid()) {
+        throw std::runtime_error("Invalid address");
+    }
+
+    // Extract script destination
+    CTxDestination dest = address.Get();
+
+    // Check if it's P2PKH or P2SH
+    CScript feeScript;
+    if (const CKeyID* keyID = boost::get<CKeyID>(&dest)) {
+        // P2PKH scriptPubKey: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+        feeScript = CScript() << OP_DUP << OP_HASH160 << ToByteVector(*keyID) << OP_EQUALVERIFY << OP_CHECKSIG;
+    } else if (const CScriptID* scriptID = boost::get<CScriptID>(&dest)) {
+        // P2SH scriptPubKey: OP_HASH160 <scriptHash> OP_EQUAL
+        feeScript = CScript() << OP_HASH160 << ToByteVector(*scriptID) << OP_EQUAL;
+    } else {
+        throw std::runtime_error("Unsupported address type");
+    }
+    coinbaseTx.vout.push_back(CTxOut(feePercentage, feeScript));
+
     coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
     pblock->vtx[0] = MakeTransactionRef(std::move(coinbaseTx));
     pblocktemplate->vchCoinbaseCommitment = GenerateCoinbaseCommitment(*pblock, pindexPrev, consensus);
